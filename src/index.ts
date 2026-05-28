@@ -2,6 +2,7 @@ import { readdir } from "fs/promises";
 import { extname, join } from "path";
 
 import {
+  Pipeline,
   pipeline,
   RawImage,
   ZeroShotImageClassificationOutput,
@@ -15,19 +16,14 @@ import {
   type Result,
   match,
   pureResult,
-} from "./src/utils/result.js";
+} from "./utils/result.js";
 
-import { IMAGES_DIR, IMAGES_EXTENSIONS } from "./constatnts.js";
-
-const CAR_LABELS = [
-  "Nissan Leaf White",
-  "Toyota Camry Blue",
-  "Honda Civic Red",
-  "BMW 3 Series Black",
-  "Mercedes-Benz C-Class Silver",
-  "Ford Mustang Yellow",
-  "Chevrolet Corvette White",
-];
+import { CAR_LABELS, IMAGES_DIR, IMAGES_EXTENSIONS } from "./constatnts.js";
+import {
+  OutputTaskTypeMap,
+  PipelineTaskTypeMap,
+  ResultTaskTypeMap,
+} from "./types.js";
 
 async function getImagesList(): Promise<Result<string[], string>> {
   try {
@@ -51,15 +47,12 @@ async function loadImage(filename: string) {
   }
 }
 
-function performRecognition(pipeline: ZeroShotImageClassificationPipeline) {
+function performRecognition<T extends keyof PipelineTaskTypeMap>(
+  pipeline: PipelineTaskTypeMap[T],
+) {
   return async (image: { filename: string; image: RawImage }) => {
     try {
       const results = await pipeline(image.image, CAR_LABELS);
-
-      const rand = Math.random();
-      if (rand < 0.2) {
-        throw new Error("Simulated random error while loading image");
-      }
 
       return success({ filename: image.filename, results });
     } catch (err) {
@@ -71,12 +64,9 @@ function performRecognition(pipeline: ZeroShotImageClassificationPipeline) {
   };
 }
 
-async function extractRecognitionResults(data: {
-  filename: string;
-  results:
-    | ZeroShotImageClassificationOutput[]
-    | ZeroShotImageClassificationOutput[][];
-}) {
+async function extractRecognitionResults<
+  T extends keyof OutputTaskTypeMap,
+>(data: { filename: string; results: OutputTaskTypeMap[T] }) {
   const { filename, results } = data;
   const topResult = results[0];
 
@@ -87,25 +77,14 @@ type ProcessingPipeResult<T> = (
   initialData: Result<string, string> | Promise<Result<string, string>>,
 ) => Promise<Result<{ filename: string; results: T }, string>>;
 
-async function cratePipeline() {
-  const model = await pipeline(
-    "zero-shot-image-classification",
-    "Xenova/clip-vit-base-patch32",
-  );
+async function cratePipeline<T extends keyof PipelineTaskTypeMap>(task: T) {
+  const model = await pipeline(task, "Xenova/clip-vit-base-patch32");
 
   return model;
 }
 
-async function handleResolve(
-  result: Result<
-    {
-      filename: string;
-      results:
-        | ZeroShotImageClassificationOutput
-        | ZeroShotImageClassificationOutput[];
-    },
-    string
-  >,
+async function handleResolve<T extends keyof ResultTaskTypeMap>(
+  result: Result<{ filename: string; results: ResultTaskTypeMap[T] }, string>,
 ) {
   match(
     result,
@@ -118,10 +97,8 @@ async function handleResolve(
   );
 }
 
-function run(
-  processingPipe: ProcessingPipeResult<
-    ZeroShotImageClassificationOutput | ZeroShotImageClassificationOutput[]
-  >,
+function run<T extends keyof ResultTaskTypeMap>(
+  processingPipe: ProcessingPipeResult<ResultTaskTypeMap[T]>,
 ) {
   return async (images: string[]) => {
     console.log("Started processing images. Count:", images.length);
@@ -139,7 +116,7 @@ function run(
 }
 
 async function main() {
-  const pipeline = await cratePipeline();
+  const pipeline = await cratePipeline("zero-shot-image-classification");
 
   const processingPipe = await pipeResult(
     loadImage,
