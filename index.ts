@@ -1,11 +1,13 @@
+import { readdir } from "fs/promises";
+import { extname, join } from "path";
+
 import {
-  ImageClassificationOutput,
   pipeline,
   RawImage,
   ZeroShotImageClassificationOutput,
+  ZeroShotImageClassificationPipeline,
 } from "@xenova/transformers";
-import { readdir } from "fs/promises";
-import { extname, join } from "path";
+
 import {
   success,
   error,
@@ -15,8 +17,8 @@ import {
   pureResult,
 } from "./src/utils/result.js";
 
-const IMAGES_DIR = "./images";
-const IMAGES_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp"];
+import { IMAGES_DIR, IMAGES_EXTENSIONS } from "./constatnts.js";
+
 const CAR_LABELS = [
   "Nissan Leaf White",
   "Toyota Camry Blue",
@@ -39,11 +41,6 @@ async function getImagesList(): Promise<Result<string[], string>> {
   }
 }
 
-async function logProcessingStart(filename: string) {
-  console.log(`Processing image: ${filename} ... `);
-  return success(filename);
-}
-
 async function loadImage(filename: string) {
   try {
     const image = await RawImage.read(join(IMAGES_DIR, filename));
@@ -54,24 +51,24 @@ async function loadImage(filename: string) {
   }
 }
 
-async function performRecognition(image: {
-  filename: string;
-  image: RawImage;
-}) {
-  try {
-    const model = await pipeline(
-      "zero-shot-image-classification",
-      "Xenova/clip-vit-base-patch32",
-    );
+function performRecognition(pipeline: ZeroShotImageClassificationPipeline) {
+  return async (image: { filename: string; image: RawImage }) => {
+    try {
+      const results = await pipeline(image.image, CAR_LABELS);
 
-    const results = await model(image.image, CAR_LABELS);
-    return success({ filename: image.filename, results });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return error(
-      `Failed to perform recognition on ${image.filename}\n: ${message}`,
-    );
-  }
+      const rand = Math.random();
+      if (rand < 0.2) {
+        throw new Error("Simulated random error while loading image");
+      }
+
+      return success({ filename: image.filename, results });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return error(
+        `Failed to perform recognition on ${image.filename}\n: ${message}`,
+      );
+    }
+  };
 }
 
 async function extractRecognitionResults(data: {
@@ -83,24 +80,24 @@ async function extractRecognitionResults(data: {
   const { filename, results } = data;
   const topResult = results[0];
 
-  console.log(`Image: ${filename}`);
-  if (Array.isArray(topResult)) {
-    topResult.forEach((res) => {
-      console.log(`  Label: ${res.label}, Score: ${res.score.toFixed(4)}`);
-    });
-  } else {
-    console.log(
-      `  Label: ${topResult.label}, Score: ${topResult.score.toFixed(4)}`,
-    );
-  }
-
   return success({ filename, results: topResult });
 }
 
-type ProcessingPipeResult = (
+type ProcessingPipeResult<T> = (
   initialData: Result<string, string> | Promise<Result<string, string>>,
-) => Promise<
-  Result<
+) => Promise<Result<{ filename: string; results: T }, string>>;
+
+async function cratePipeline() {
+  const model = await pipeline(
+    "zero-shot-image-classification",
+    "Xenova/clip-vit-base-patch32",
+  );
+
+  return model;
+}
+
+async function handleResolve(
+  result: Result<
     {
       filename: string;
       results:
@@ -108,37 +105,48 @@ type ProcessingPipeResult = (
         | ZeroShotImageClassificationOutput[];
     },
     string
-  >
->;
+  >,
+) {
+  match(
+    result,
+    (data) => {
+      console.log(`TopResult for ${data.filename}:`, data.results);
+    },
+    (err) => {
+      console.error(`Error processing:`, err);
+    },
+  );
+}
 
-function run(processingPipe: ProcessingPipeResult) {
+function run(
+  processingPipe: ProcessingPipeResult<
+    ZeroShotImageClassificationOutput | ZeroShotImageClassificationOutput[]
+  >,
+) {
   return async (images: string[]) => {
-    const results = await Promise.allSettled(
-      images.map((filename) => processingPipe(pureResult(filename))),
+    console.log("Started processing images. Count:", images.length);
+
+    const promises = images.map((filename) =>
+      processingPipe(pureResult(filename))
+        .then(handleResolve)
+        .catch((err) => {
+          console.error(`Unexpected error processing ${filename}:`, err);
+        }),
     );
 
-    results
-      .filter(
-        (res) =>
-          res.status === "rejected" ||
-          (res.status === "fulfilled" && !res.value.success),
-      )
-      .forEach((error) => {
-        console.error(
-          error.status === "rejected" ? error.reason : error.value.error,
-          "\n-------------------------------\n\n",
-        );
-      });
+    await Promise.all(promises);
   };
 }
 
 async function main() {
+  const pipeline = await cratePipeline();
+
   const processingPipe = await pipeResult(
-    logProcessingStart,
     loadImage,
-    performRecognition,
+    performRecognition(pipeline),
     extractRecognitionResults,
   );
+
   const imagesResult = await getImagesList();
 
   match(imagesResult, run(processingPipe), (err) => {
