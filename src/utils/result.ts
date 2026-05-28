@@ -1,3 +1,5 @@
+import "../polyfills/promise-try.polofill.js";
+
 export type Result<TSuccess, TError> =
   | { success: true; data: TSuccess }
   | { success: false; error: TError };
@@ -17,7 +19,6 @@ export const bindResult = async <TSuccess, TError, U>(
   fn: (data: TSuccess) => Result<U, TError> | Promise<Result<U, TError>>,
 ): Promise<Result<U, TError>> => {
   if (result.success) {
-    // @ts-ignore - Promise.try introduced in JavaScript Baseline 2025, and may not be recognized by TypeScript yet
     return Promise.try(() => fn(result.data));
   } else {
     return result;
@@ -140,15 +141,15 @@ export function pipeResult<TError>(
   };
 }
 
-export function match<TSuccess, TError>(
+export async function match<TSuccess, TError>(
   result: Result<TSuccess, TError>,
-  onSuccess: (data: TSuccess) => void,
-  onError: (error: TError) => void,
+  onSuccess: (data: TSuccess) => void | Promise<void>,
+  onError: (error: TError) => void | Promise<void>,
 ) {
   if (result.success) {
-    void onSuccess(result.data);
+    await Promise.try(() => onSuccess(result.data));
   } else {
-    void onError(result.error);
+    await Promise.try(() => onError(result.error));
   }
 }
 

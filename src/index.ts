@@ -1,13 +1,7 @@
 import { readdir } from "fs/promises";
 import { extname, join } from "path";
 
-import {
-  Pipeline,
-  pipeline,
-  RawImage,
-  ZeroShotImageClassificationOutput,
-  ZeroShotImageClassificationPipeline,
-} from "@xenova/transformers";
+import { pipeline, RawImage } from "@xenova/transformers";
 
 import {
   success,
@@ -18,20 +12,30 @@ import {
   pureResult,
 } from "./utils/result.js";
 
-import { CAR_LABELS, IMAGES_DIR, IMAGES_EXTENSIONS } from "./constatnts.js";
+import {
+  BATCH_SIZE,
+  CAR_LABELS,
+  IMAGES_DIR,
+  IMAGES_EXTENSIONS,
+} from "./constatnts.js";
+
 import {
   OutputTaskTypeMap,
   PipelineTaskTypeMap,
   ResultTaskTypeMap,
 } from "./types.js";
 
-async function getImagesList(): Promise<Result<string[], string>> {
+async function* getImagesList(): AsyncGenerator<Result<string[], string>> {
   try {
     const files: string[] = await readdir(IMAGES_DIR);
-    const images = files.filter((file) =>
-      IMAGES_EXTENSIONS.includes(extname(file).toLowerCase()),
-    );
-    return success(images);
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      const validImages = batch.filter((file) =>
+        IMAGES_EXTENSIONS.includes(extname(file).toLowerCase()),
+      );
+
+      yield success(validImages);
+    }
   } catch (err) {
     return error(err instanceof Error ? err.message : String(err));
   }
@@ -97,7 +101,7 @@ async function handleResolve<T extends keyof ResultTaskTypeMap>(
   );
 }
 
-function run<T extends keyof ResultTaskTypeMap>(
+function executeImagePipeline<T extends keyof ResultTaskTypeMap>(
   processingPipe: ProcessingPipeResult<ResultTaskTypeMap[T]>,
 ) {
   return async (images: string[]) => {
@@ -126,9 +130,26 @@ async function main() {
 
   const imagesResult = await getImagesList();
 
-  match(imagesResult, run(processingPipe), (err) => {
-    console.error("Failed to read images directory:", err);
-  });
+  const pipelineRunner =
+    () => async (iteratorResult: IteratorResult<Result<string[], string>>) => {
+      if (iteratorResult.done) {
+        console.log("Finished processing all images.");
+        return;
+      }
+
+      await match(
+        iteratorResult.value,
+        executeImagePipeline(processingPipe),
+        (err) => {
+          console.error("Failed to read images directory:", err);
+        },
+      );
+
+      const nextInteratorResult = await imagesResult.next();
+      await pipelineRunner()(nextInteratorResult);
+    };
+
+  await pipelineRunner()(await imagesResult.next());
 }
 
 main().catch((err) => {
